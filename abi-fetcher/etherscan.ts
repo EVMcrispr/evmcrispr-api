@@ -1,32 +1,15 @@
 import type { Abi } from "viem";
-import * as chains from "viem/chains";
-
-const explorers = Object.fromEntries(
-  Object.values(chains)
-    .map<[number, string | undefined]>((chain) => {
-      const blockExplorer = chain.blockExplorers?.default;
-      const apiUrl =
-        blockExplorer && "apiUrl" in blockExplorer
-          ? blockExplorer.apiUrl
-          : undefined;
-      return [chain.id, apiUrl];
-    })
-    .filter(([, apiUrl]) => apiUrl !== undefined),
-);
 
 export async function getAbiEntriesFromEtherscan(
   address: string,
   chainId: number,
   apiKey?: string,
 ): Promise<Abi> {
-  if (!explorers[chainId]) {
-    throw new Error(`Unsupported chainId: ${chainId}`);
-  }
 
-  const baseUrl = explorers[chainId];
+  const baseUrl = "https://api.etherscan.io/v2/api";
   console.log(`${baseUrl}?module=contract&action=getabi&address=${address}&apikey=${apiKey || ""}`)
   const response = await fetch(
-    `${baseUrl}?module=contract&action=getabi&address=${address}&apikey=${apiKey || ""}`,
+    `${baseUrl}?chainId=${chainId}&module=contract&action=getabi&address=${address}&apikey=${apiKey || ""}`,
   );
 
   if (!response.ok) {
