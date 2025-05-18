@@ -1,50 +1,70 @@
 import { getNetworkName } from "./coingecko.ts";
+import { fetchWithCache } from "./cache.ts";
+
+const kv = await Deno.openKv();
 
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
 
-  // Extract target URL from path
-  const prefix = "/v0/";
-  const path = decodeURIComponent(url.pathname);
-  if (!path.startsWith(prefix)) {
-    return new Response("Not Found", { status: 404 });
-  }
-
-  const chainId = Number(path.slice(prefix.length).split("/")[0]);
-  if (!Number.isInteger(chainId)) {
-    return new Response("Invalid chainId", { status: 400 });
-  }
-
-  // Validate target domain
   try {
+    // Extract target URL from path
+    const prefix = "/v0/";
+    const path = decodeURIComponent(url.pathname);
+    if (!path.startsWith(prefix)) {
+      return new Response("Not Found", { status: 404 });
+    }
+
+    const chainIdStr = path.slice(prefix.length).split("/")[0];
+    const chainId = Number(chainIdStr);
+    if (!Number.isInteger(chainId) || chainId <= 0) {
+        console.error(`Invalid chainId received: ${chainIdStr}`);
+        return new Response("Invalid chainId", { status: 400 });
+    }
+
     const { name: networkName, id: networkId } = await getNetworkName(chainId);
-    const coingeckoTokenList = `https://tokens.coingecko.com/${networkId}/all.json`;
-    const superfluidTokenList =
+    if (!networkId) {
+        console.error(`Could not get networkId for chainId: ${chainId}`);
+        return new Response(`Unsupported chainId: ${chainId}`, { status: 400 });
+    }
+
+    const coingeckoTokenListUrl = `https://tokens.coingecko.com/${networkId}/all.json`;
+    const superfluidTokenListUrl =
       "https://raw.githubusercontent.com/superfluid-finance/tokenlist/main/superfluid.extended.tokenlist.json";
-    const tokenLists = await Promise.all([
-      fetch(coingeckoTokenList).then((res) => res.json()),
-      fetch(superfluidTokenList).then((res) => res.json()),
+
+    // Fetch both lists using the cache-aware function
+    // Using specific cache key prefixes for clarity and potential future separate management
+    const [coingeckoData, superfluidData] = await Promise.all([
+      fetchWithCache(kv, coingeckoTokenListUrl, "coingecko_cache_v1"),
+      fetchWithCache(kv, superfluidTokenListUrl, "superfluid_cache_v1"),
     ]);
+
+    // Ensure both fetches returned data (either fresh or cached)
+    // The fetchWithCache function throws if it can't get data,
+    // so if we reach here, coingeckoData and superfluidData are populated.
+
     const lastTimestamp = Math.max(
-      ...tokenLists.map((tokenList) => new Date(tokenList.timestamp).getTime()),
+      new Date(coingeckoData.timestamp || 0).getTime(),
+      new Date(superfluidData.timestamp || 0).getTime()
     );
+
     const tokenList = {
       name: `EVMcrispr Token List (${networkName})`,
       logoURI: "https://evmcrispr.com/favicon.ico",
       timestamp: new Date(lastTimestamp).toISOString(),
-      tokens: tokenLists[0].tokens
+      tokens: (coingeckoData.tokens || [])
         .concat(
-          tokenLists[1].tokens.filter((token) => token.chainId === chainId),
+          (superfluidData.tokens || []).filter((token: any) => token.chainId === chainId),
         )
-        .reduce((acc, token) => {
-          if (acc.find((t) => t.address === token.address)) {
-            return acc;
+        .reduce((acc: any[], token: any) => {
+          if (!acc.find((t) => t.address && token.address && t.address.toLowerCase() === token.address.toLowerCase())) {
+            acc.push(token);
           }
-          acc.push(token);
           return acc;
         }, []),
       version: {
-        patch: 1,
+        patch: 0,
+        major: 1,
+        minor: 0
       },
     };
 
@@ -53,9 +73,11 @@ Deno.serve(async (req: Request) => {
       headers: {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=300, s-maxage=300",
       },
     });
   } catch (err) {
-    return new Response(`Fetch error: ${err.message}`, { status: 500 });
+    console.error("Main handler error:", err);
+    return new Response(`Error: ${err.message}`, { status: 500 });
   }
 });
